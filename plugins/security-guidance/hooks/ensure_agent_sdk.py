@@ -32,6 +32,8 @@ BUILD_FAILED = 3     # venv create or pip install raised/timed out
 # llm.py also matches Windows venv layout (Lib/site-packages). Don't reuse the
 # value — telemetry rows from older plugin builds still emit 4.
 SKIP_SENTINEL = 5    # another SessionStart is currently building
+HOOK_PY_INCOMPATIBLE = 6  # hook interpreter is <3.10 — SDK syntax can't load
+                          # here no matter how the venv was built. See #2071.
 
 
 def _sdk_on_syspath() -> bool:
@@ -62,6 +64,29 @@ def main() -> tuple[int, str, str]:
     err_phase / err_kind are non-empty only on BUILD_FAILED — they let
     telemetry split bootstrap failures by root cause.
     """
+    # Honesty check (fixes the misleading NOOP_VENV in #2071): the SDK
+    # requires Python >=3.10 and uses 3.10+ syntax (match statements,
+    # PEP 604 unions). On a 3.9 hook interpreter we CANNOT import it no
+    # matter how the venv was built — llm.py runs in this same interpreter
+    # and the syntax-level import will SyntaxError. macOS ships 3.9.6 as
+    # the default `python3` and `/usr/bin` precedes Homebrew in PATH, so
+    # this case is the default state for a large share of macOS users.
+    #
+    # sg-python.sh now prefers python3.10+ binaries so most users won't
+    # reach this branch; the fallback to 3.9 is preserved for the
+    # pattern-warning hooks that don't need the SDK. Reporting
+    # HOOK_PY_INCOMPATIBLE here:
+    #   (a) avoids 30-60s of wasted pip install,
+    #   (b) avoids the lie where the venv_py probe says NOOP_VENV but the
+    #       consumer import fails, and
+    #   (c) gives telemetry a clean bucket to size the affected fleet.
+    if sys.version_info < (3, 10):
+        return (
+            HOOK_PY_INCOMPATIBLE,
+            "hook_py",
+            f"py_{sys.version_info[0]}.{sys.version_info[1]}",
+        )
+
     if _sdk_on_syspath():
         return NOOP_SYSTEM, "", ""
 
@@ -195,6 +220,56 @@ def main() -> tuple[int, str, str]:
             sentinel.unlink(missing_ok=True)
 
 
+def _maybe_emit_user_notice(outcome: int, pv: int) -> str | None:
+    """Return a one-time user-visible notice when the agentic reviewer is
+    in a persistent broken state on this machine, or None if we've already
+    shown the notice for this plugin version (or shouldn't show one).
+
+    The marker file is plugin-version-keyed: a future plugin update can
+    re-notify if behavior changes (e.g. we ship out-of-process SDK in v3
+    and want to tell affected users it's fixed). Failures to write the
+    marker degrade to "skip the notice this session" so we don't spam
+    every SessionStart on a read-only home dir.
+
+    Currently only HOOK_PY_INCOMPATIBLE qualifies. BUILD_FAILED is
+    intentionally excluded — it covers transient causes (network failure,
+    pip registry hiccup, in-flight rebuild) where the next session may
+    succeed and a permanent notice would mislead.
+    """
+    if outcome != HOOK_PY_INCOMPATIBLE:
+        return None
+    try:
+        state_dir = Path(
+            os.environ.get("SECURITY_WARNINGS_STATE_DIR")
+            or os.path.expanduser("~/.claude/security")
+        )
+        marker = state_dir / f".agentic_unavailable_notice_v{pv or 0}"
+        if marker.exists():
+            return None
+        state_dir.mkdir(parents=True, exist_ok=True)
+        # Write timestamp + Python version so the marker is self-documenting
+        # if a user goes looking. O_EXCL would be racier with no real win
+        # (two concurrent SessionStarts both showing the notice once is fine).
+        marker.write_text(
+            f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+            f"py={sys.version_info[0]}.{sys.version_info[1]}\n"
+        )
+    except OSError:
+        return None
+    return (
+        f"⚠ security-guidance plugin: the cross-file commit reviewer "
+        f"(layer 3 of 3 — catches IDOR, auth-bypass, cross-file SSRF) "
+        f"is unavailable in this environment. It requires Python ≥3.10, "
+        f"but the hook is running on "
+        f"{sys.version_info[0]}.{sys.version_info[1]}.\n\n"
+        f"Pattern checks and the single-shot LLM diff review are still "
+        f"active. To enable the deeper reviewer, install Python 3.10+ "
+        f"(e.g. `brew install python` on macOS) and restart Claude Code.\n\n"
+        f"This notice is shown once per plugin version. "
+        f"See: github.com/anthropics/claude-plugins-official/issues/2071"
+    )
+
+
 if __name__ == "__main__":
     # Tell the harness this is async — venv create + pip install can take
     # 30-60s on a cold cache, well past the default sync hook timeout.
@@ -231,4 +306,18 @@ if __name__ == "__main__":
     pv = _plugin_version_int()
     if pv:
         metrics["pv"] = pv
-    print(json.dumps({"metrics": metrics}), flush=True)
+    response: dict[str, object] = {"metrics": metrics}
+    # One-time user-visible notice when the agentic reviewer is dead on
+    # arrival. Uses hookSpecificOutput.additionalContext (SessionStart's
+    # supported channel for surfacing text to both the model and the user)
+    # plus systemMessage as a belt-and-suspenders. Marker-file-gated so
+    # this fires exactly once per plugin version per install — see
+    # _maybe_emit_user_notice.
+    notice = _maybe_emit_user_notice(outcome, pv)
+    if notice:
+        response["hookSpecificOutput"] = {
+            "hookEventName": "SessionStart",
+            "additionalContext": notice,
+        }
+        response["systemMessage"] = notice
+    print(json.dumps(response), flush=True)
