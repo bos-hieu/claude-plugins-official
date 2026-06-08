@@ -5,7 +5,9 @@ argument-hint: <system-dir> [--show-secrets] | --portfolio <parent-dir>
 
 **Mode select.** If `$ARGUMENTS` starts with `--portfolio`, run **Portfolio
 mode** against the directory that follows. Otherwise run **Single-system
-mode** against `legacy/$1`.
+mode** against the system dir. Parse flags positionally-independently:
+`--show-secrets` may appear before or after the system dir — the system
+dir is the first non-flag token.
 
 ---
 
@@ -108,7 +110,9 @@ Spawn three subagents **in parallel**:
 2. **legacy-analyst** — "Identify technical debt in legacy/$1: dead code,
    deprecated APIs, copy-paste duplication, god objects/programs, missing
    error handling, hardcoded config. Return the top 10 findings ranked by
-   remediation value, each with file:line evidence."
+   remediation value, each with file:line evidence. If evidence contains a
+   credential value, mask it per your secret-handling rules — never quote
+   it."
 
 3. **security-auditor** — "Scan legacy/$1 for security vulnerabilities:
    injection, auth weaknesses, hardcoded secrets, vulnerable dependencies,
@@ -150,14 +154,20 @@ security-auditor found any hardcoded credentials:
 1. Ensure `analysis/.gitignore` exists and contains the line
    `SECRETS.local.md` (create or append as needed). If the project is a
    git repo, verify with `git check-ignore -q analysis/$1/SECRETS.local.md`
-   before writing any findings.
-2. Write `analysis/$1/SECRETS.local.md`: one row per credential — masked
-   preview, `file:line`, credential type, what it grants access to,
+   — do not write any findings until the check passes. If there is **no
+   git repo** (check for `.svn`/`.hg`/`CVS` too — a `.gitignore` protects
+   nothing under another VCS): refuse `--show-secrets` and write
+   `SECRETS.local.md` to `~/.modernize/$1/` instead of the project tree,
+   telling the user where it went and why.
+2. Write `SECRETS.local.md`: one row per credential — masked preview,
+   `file:line`, credential type, what it grants access to,
    production/test guess, rotation recommendation. Only if the user passed
    `--show-secrets`, add the raw value column here — this file only, never
    ASSESSMENT.md.
-3. In ASSESSMENT.md, the Security Findings section lists credential
-   findings with masked values only, plus a one-line pointer:
+3. Masking applies to **every section of ASSESSMENT.md**, whichever agent
+   produced the finding — the Technical Debt section quotes hardcoded
+   config; those quotes follow the same masking rule as Security Findings.
+   The Security Findings section adds a one-line pointer:
    "Credential inventory in SECRETS.local.md (gitignored; not for sharing)."
 
 Create `analysis/$1/ASSESSMENT.md` with these sections:
