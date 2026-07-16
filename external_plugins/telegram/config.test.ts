@@ -4,6 +4,7 @@ import { parseBinding } from './config'
 test('unset TELEGRAM_TOPIC → legacy', () => {
   expect(parseBinding(undefined)).toEqual({ role: 'legacy', topicId: null })
   expect(parseBinding('')).toEqual({ role: 'legacy', topicId: null })
+  expect(parseBinding('   ')).toEqual({ role: 'legacy', topicId: null })
 })
 
 test('general → orchestrator (case-insensitive)', () => {
@@ -13,6 +14,7 @@ test('general → orchestrator (case-insensitive)', () => {
 
 test('numeric → worker for that topic', () => {
   expect(parseBinding('34')).toEqual({ role: 'worker', topicId: 34 })
+  expect(parseBinding(' 34 ')).toEqual({ role: 'worker', topicId: 34 })
 })
 
 test('invalid value throws', () => {
