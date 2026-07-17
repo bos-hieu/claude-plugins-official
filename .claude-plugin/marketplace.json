@@ -2591,6 +2591,17 @@
       "homepage": "https://www.revenuecat.com"
     },
     {
+      "name": "receipts",
+      "description": "Generate a personal Claude Code impact report from your local ~/.claude/projects transcripts, cross-referenced against your local git history — what you shipped, which projects it went to, and each project's share of your usage — for justifying usage to a manager or a self-review. Reads your session transcripts and runs read-only git commands in the projects they mention; mining is local and only a small aggregate summary (counts and project names) is sent to write the report, which is saved to your home directory and published nowhere.",
+      "author": {
+        "name": "Anthropic",
+        "email": "support@anthropic.com"
+      },
+      "source": "./plugins/receipts",
+      "category": "productivity",
+      "homepage": "https://github.com/anthropics/claude-plugins-official/tree/main/plugins/receipts"
+    },
+    {
       "name": "redis-development",
       "description": "Redis development best practices — data structures, query engine, vector search, caching, and performance optimization",
       "author": {
