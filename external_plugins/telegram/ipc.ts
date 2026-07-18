@@ -13,6 +13,7 @@ export type SessionMeta = {
   topic_name?: string
   is_general?: boolean
   unrouted?: boolean
+  permission?: { request_id: string; behavior: 'allow' | 'deny' }
   [k: string]: unknown
 }
 
