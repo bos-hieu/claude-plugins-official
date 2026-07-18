@@ -131,7 +131,7 @@ later.
 ## Contributing
 
 Multi-session forum topics, the General-topic orchestrator, and Bot API 10.1
-rich-message support (v0.1.0) were contributed by
+rich-message support (v0.2.0) were contributed by
 [@bos-hieu](https://github.com/bos-hieu).
 
 Contributions are welcome. The MCP server is a single Bun/TypeScript codebase

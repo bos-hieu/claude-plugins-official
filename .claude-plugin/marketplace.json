@@ -3126,7 +3126,7 @@
     },
     {
       "name": "telegram",
-      "description": "Telegram messaging bridge with built-in access control. Multiple concurrent sessions on one bot via forum topics, a General-topic orchestrator, and Bot API 10.1 rich messages. Manage pairing, allowlists, and policy via /telegram:access.",
+      "description": "Telegram messaging bridge with built-in access control. Run multiple Claude sessions on one bot, each bound to a forum topic, coordinated by a General-topic orchestrator, with Bot API 10.1 rich messages. Manage pairing, allowlists, and policy via /telegram:access.",
       "category": "productivity",
       "source": "./external_plugins/telegram"
     },

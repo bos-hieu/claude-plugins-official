@@ -2,7 +2,7 @@
 
 All notable changes to the Telegram plugin are documented here.
 
-## 0.1.0
+## 0.2.0
 
 Multi-session, forum topics, orchestrator, and rich messages.
 
