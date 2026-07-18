@@ -127,3 +127,16 @@ assistant needs earlier context, it will ask you to paste or summarize.
 This also means there's no `download_attachment` tool for historical messages
 — photos are downloaded eagerly on arrival since there's no way to fetch them
 later.
+
+## Contributing
+
+Multi-session forum topics, the General-topic orchestrator, and Bot API 10.1
+rich-message support (v0.1.0) were contributed by
+[@bos-hieu](https://github.com/bos-hieu).
+
+Contributions are welcome. The MCP server is a single Bun/TypeScript codebase
+under `external_plugins/telegram/`; run the test suite with `bun test` from that
+directory (unit tests cover config, gating, chunking, IPC framing, routing,
+rich-message fallback, and spawn validation). Please keep the legacy single-user
+DM path working (`TELEGRAM_TOPIC` unset) and add tests for new behavior. See
+[CHANGELOG.md](./CHANGELOG.md) for the release history.

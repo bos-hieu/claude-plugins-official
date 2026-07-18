@@ -2,6 +2,10 @@
   "name": "telegram",
   "description": "Telegram channel for Claude Code \u2014 messaging bridge with built-in access control. Multiple concurrent sessions on one bot via forum topics, a General-topic orchestrator, and Bot API 10.1 rich messages. Manage pairing, allowlists, and policy via /telegram:access.",
   "version": "0.1.0",
+  "author": {
+    "name": "bos-hieu",
+    "url": "https://github.com/bos-hieu"
+  },
   "keywords": [
     "telegram",
     "messaging",

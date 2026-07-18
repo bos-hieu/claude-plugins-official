@@ -119,6 +119,7 @@ The bot must be a **group admin with `can_manage_topics`** for the topic-managem
 | `/telegram:access group add -1001654782309` | Enable a group. Flags: `--no-mention` (also requires disabling privacy mode), `--allow id1,id2`. |
 | `/telegram:access group rm -1001654782309` | Disable a group. |
 | `/telegram:access set ackReaction 👀` | Set a config key: `ackReaction`, `replyToMode`, `textChunkLimit`, `chunkMode`, `mentionPatterns`, `defaultReplyFormat`. |
+| `/telegram:access set spawnRoots '["/abs/path"]'` | Set the required allowlist of absolute path prefixes the orchestrator's `spawn_session` may launch workers under. JSON array. |
 
 ## Config file
 
