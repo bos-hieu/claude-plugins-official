@@ -23,3 +23,14 @@ test('LineDecoder ignores blank lines', () => {
   d.push(Buffer.from('\n\n{"t":"heartbeat"}\n'))
   expect(got.length).toBe(1)
 })
+
+test('LineDecoder preserves multi-byte UTF-8 split across chunks', () => {
+  const got: any[] = []
+  const d = new LineDecoder<any>(f => got.push(f))
+  const full = Buffer.from(JSON.stringify({ t: 'inbound', content: 'héllo 🎉 日本語', meta: {} }) + '\n', 'utf8')
+  const mid = Math.floor(full.length / 2)
+  d.push(full.subarray(0, mid))
+  d.push(full.subarray(mid))
+  expect(got.length).toBe(1)
+  expect(got[0].content).toBe('héllo 🎉 日本語')
+})
