@@ -34,6 +34,7 @@ import {
 } from './access'
 import { TOKEN, SOCK_FILE, STATE_DIR, INBOX_DIR, ENV_FILE, BINDING } from './config'
 import { encodeFrame, LineDecoder, type BrokerFrame } from './ipc'
+import { sendRich, editRich, RichUnsupported } from './richtext'
 
 // Env loading (.env → process.env), path constants, TOKEN and BINDING all live
 // in ./config now (imported above) — no longer duplicated here. Keep the guard
@@ -110,6 +111,11 @@ const mcp = new Server(
 // Stores full permission details for "See more" expansion keyed by request_id.
 const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
 
+// Last inbound chat id seen by this session. A worker uses it to route its
+// permission prompt back into the group the request came from (paired with
+// BINDING.topicId for the topic). Empty until the first inbound message.
+let lastChatId = ''
+
 // Receive permission_request from CC → format → send to all allowlisted DMs.
 // Groups are intentionally excluded — the security thread resolution was
 // "single-user mode for official plugins." Anyone in access.allowFrom
@@ -133,6 +139,18 @@ mcp.setNotificationHandler(
       .text('See more', `perm:more:${request_id}`)
       .text('✅ Allow', `perm:allow:${request_id}`)
       .text('❌ Deny', `perm:deny:${request_id}`)
+    // A worker routes its prompt into the group/topic the request came from, so
+    // it lands beside the work rather than fanning out to every DM. Falls back
+    // to the DM broadcast if no inbound has been seen yet (lastChatId empty).
+    if (BINDING.role === 'worker' && lastChatId) {
+      void bot.api.sendMessage(lastChatId, text, {
+        reply_markup: keyboard,
+        ...(BINDING.topicId != null ? { message_thread_id: BINDING.topicId } : {}),
+      }).catch(e => {
+        process.stderr.write(`permission_request send to ${lastChatId} failed: ${e}\n`)
+      })
+      return
+    }
     for (const chat_id of access.allowFrom) {
       void bot.api.sendMessage(chat_id, text, { reply_markup: keyboard }).catch(e => {
         process.stderr.write(`permission_request send to ${chat_id} failed: ${e}\n`)
@@ -156,6 +174,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Message ID to thread under. Use message_id from the inbound <channel> block.',
           },
+          message_thread_id: {
+            type: 'string',
+            description: "Forum topic id to send into. Defaults to this session's bound topic.",
+          },
           files: {
             type: 'array',
             items: { type: 'string' },
@@ -163,8 +185,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           format: {
             type: 'string',
-            enum: ['text', 'markdownv2'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. Default: 'text' (plain, no escaping needed).",
+            enum: ['text', 'markdownv2', 'rich'],
+            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links); caller must escape special chars per MarkdownV2 rules. 'rich' renders Markdown natively (Bot API Rich Messages) with automatic fallback to plain text when unsupported. Default: 'text' (plain, no escaping needed).",
           },
         },
         required: ['chat_id', 'text'],
@@ -205,8 +227,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string' },
           format: {
             type: 'string',
-            enum: ['text', 'markdownv2'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. Default: 'text' (plain, no escaping needed).",
+            enum: ['text', 'markdownv2', 'rich'],
+            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links); caller must escape special chars per MarkdownV2 rules. 'rich' renders Markdown natively (Bot API Rich Messages) with automatic fallback to plain text when unsupported. Default: 'text' (plain, no escaping needed).",
           },
         },
         required: ['chat_id', 'message_id', 'text'],
@@ -224,8 +246,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const text = args.text as string
         const reply_to = args.reply_to != null ? Number(args.reply_to) : undefined
         const files = (args.files as string[] | undefined) ?? []
-        const format = (args.format as string | undefined) ?? 'text'
-        const parseMode = format === 'markdownv2' ? 'MarkdownV2' as const : undefined
 
         assertAllowedChat(chat_id)
 
@@ -238,39 +258,68 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         const access = loadAccess()
+        // Explicit arg wins; otherwise this session's bound topic (workers carry
+        // a numeric topicId; orchestrator/legacy carry null → undefined = no topic).
+        const threadId =
+          args.message_thread_id != null ? Number(args.message_thread_id)
+          : (BINDING.topicId ?? undefined)
+        const chosen = (args.format as string | undefined) ?? access.defaultReplyFormat ?? 'text'
+        // 'rich' falls back to plain text (parseMode undefined) if unsupported.
+        const parseMode = chosen === 'markdownv2' ? 'MarkdownV2' as const : undefined
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
-        const chunks = chunk(text, limit, mode)
         const sentIds: number[] = []
 
-        try {
-          for (let i = 0; i < chunks.length; i++) {
-            const shouldReplyTo =
-              reply_to != null &&
-              replyMode !== 'off' &&
-              (replyMode === 'all' || i === 0)
-            const sent = await bot.api.sendMessage(chat_id, chunks[i], {
-              ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
-              ...(parseMode ? { parse_mode: parseMode } : {}),
-            })
-            sentIds.push(sent.message_id)
+        // Rich path: the whole text body goes as ONE Markdown-native message. On
+        // success we skip the chunked text loop (richSent=true) but still run the
+        // files loop below. On RichUnsupported we fall through to the plain
+        // chunked path (which already handles reply_to/threading).
+        let richSent = false
+        if (chosen === 'rich') {
+          try {
+            const id = await sendRich(bot.api, { chat_id, text, message_thread_id: threadId, reply_to })
+            sentIds.push(id)
+            richSent = true
+            if (files.length === 0) return { content: [{ type: 'text', text: `sent (id: ${id})` }] }
+          } catch (err) {
+            if (!(err instanceof RichUnsupported)) throw err
+            process.stderr.write('telegram session: rich unsupported, falling back to text\n')
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          throw new Error(
-            `reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`,
-          )
+        }
+
+        if (!richSent) {
+          const chunks = chunk(text, limit, mode)
+          try {
+            for (let i = 0; i < chunks.length; i++) {
+              const shouldReplyTo =
+                reply_to != null &&
+                replyMode !== 'off' &&
+                (replyMode === 'all' || i === 0)
+              const sent = await bot.api.sendMessage(chat_id, chunks[i], {
+                ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
+                ...(threadId != null ? { message_thread_id: threadId } : {}),
+                ...(parseMode ? { parse_mode: parseMode } : {}),
+              })
+              sentIds.push(sent.message_id)
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            throw new Error(
+              `reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`,
+            )
+          }
         }
 
         // Files go as separate messages (Telegram doesn't mix text+file in one
-        // sendMessage call). Thread under reply_to if present.
+        // sendMessage call). Thread under reply_to and the resolved topic.
         for (const f of files) {
           const ext = extname(f).toLowerCase()
           const input = new InputFile(f)
-          const opts = reply_to != null && replyMode !== 'off'
-            ? { reply_parameters: { message_id: reply_to } }
-            : undefined
+          const opts = {
+            ...(reply_to != null && replyMode !== 'off' ? { reply_parameters: { message_id: reply_to } } : {}),
+            ...(threadId != null ? { message_thread_id: threadId } : {}),
+          }
           if (PHOTO_EXTS.has(ext)) {
             const sent = await bot.api.sendPhoto(chat_id, input, opts)
             sentIds.push(sent.message_id)
@@ -312,16 +361,30 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         return { content: [{ type: 'text', text: path }] }
       }
       case 'edit_message': {
-        assertAllowedChat(args.chat_id as string)
+        const chat_id = args.chat_id as string
+        assertAllowedChat(chat_id)
+        const message_id = Number(args.message_id)
+        const text = args.text as string
         const editFormat = (args.format as string | undefined) ?? 'text'
+        // Rich edit renders Markdown natively; on RichUnsupported fall back to
+        // the plain editMessageText path (no parse_mode).
+        if (editFormat === 'rich') {
+          try {
+            const id = await editRich(bot.api, chat_id, message_id, text)
+            return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
+          } catch (err) {
+            if (!(err instanceof RichUnsupported)) throw err
+            process.stderr.write('telegram session: rich unsupported, falling back to text\n')
+          }
+        }
         const editParseMode = editFormat === 'markdownv2' ? 'MarkdownV2' as const : undefined
         const edited = await bot.api.editMessageText(
-          args.chat_id as string,
-          Number(args.message_id),
-          args.text as string,
+          chat_id,
+          message_id,
+          text,
           ...(editParseMode ? [{ parse_mode: editParseMode }] : []),
         )
-        const id = typeof edited === 'object' ? edited.message_id : args.message_id
+        const id = typeof edited === 'object' ? edited.message_id : message_id
         return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
       }
       default:
@@ -403,6 +466,7 @@ async function startInbound(): Promise<void> {
         })
         return
       }
+      lastChatId = frame.meta.chat_id
       void mcp.notification({ method: 'notifications/claude/channel', params: { content: frame.content, meta: frame.meta } })
       return
     }
