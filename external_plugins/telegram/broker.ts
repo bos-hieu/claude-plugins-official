@@ -307,13 +307,16 @@ export async function startBroker(opts: BrokerOpts): Promise<Broker> {
         return
       }
 
-      // Not routed by topic — a button press carries no thread context. Deliver
-      // the verdict to the hub session as a permission inbound frame.
+      // Route the verdict to the session that owns the topic the prompt was
+      // posted in — the callback message carries the same message_thread_id the
+      // worker sent the prompt into. Falling back to null (→ hub) covers DM/
+      // General prompts. Must mirror the text-reply path below, else a worker's
+      // Allow/Deny tap would hang its tool call.
       deliverInbound(
         broker,
         { chat_id: String(ctx.chat!.id), permission: { request_id, behavior: behavior as 'allow' | 'deny' } },
         '',
-        { thread_id: null, is_private: ctx.chat?.type === 'private' },
+        { thread_id: ctx.callbackQuery.message?.message_thread_id ?? null, is_private: ctx.chat?.type === 'private' },
       )
       pendingPermissions.delete(request_id)
       const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'

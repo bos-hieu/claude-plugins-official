@@ -36,7 +36,6 @@ export type SessionFrame =
 
 // broker → session
 export type BrokerFrame =
-  | { t: 'welcome'; bot_username: string; chat_id: string | null }
   | { t: 'inbound'; content: string; meta: SessionMeta }
   | { t: 'sessions'; sessions: SessionInfo[] }
   | { t: 'error'; message: string }

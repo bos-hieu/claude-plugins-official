@@ -559,7 +559,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 // BINDING, and relays inbound frames into MCP channel notifications. Outbound
 // tools above talk to Telegram directly via `bot`.
 let brokerSocket: net.Socket | null = null
-let botChatIdHint = ''
 // list_sessions round-trip state (the tool itself is added in Task 12).
 let sessionsWaiters: Array<(s: any[]) => void> = []
 function resolvePendingSessions(s: any[]): void { for (const w of sessionsWaiters) w(s); sessionsWaiters = [] }
@@ -621,7 +620,6 @@ function connectBroker(onFrame: (f: BrokerFrame) => void): Promise<net.Socket | 
 
 async function startInbound(): Promise<void> {
   brokerSocket = await connectBroker(frame => {
-    if (frame.t === 'welcome') { botChatIdHint = frame.chat_id ?? ''; return }
     if (frame.t === 'inbound') {
       if (frame.meta.permission) {
         void mcp.notification({
