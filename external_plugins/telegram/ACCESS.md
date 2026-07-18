@@ -92,6 +92,20 @@ Configure outbound behavior with `/telegram:access set <key> <value>`.
 
 **`chunkMode`** chooses the split strategy: `length` cuts exactly at the limit; `newline` prefers paragraph boundaries.
 
+**`defaultReplyFormat`** sets the rendering used when a `reply`/`edit_message` call omits `format`: `text` (default, unchanged), `markdownv2`, or `rich`. `rich` (Bot API 10.1) renders Claude's Markdown — headings, code, lists, tables — natively, and automatically falls back to plain text if the bot or client doesn't support it. Callers can still override per-call with `format: 'rich'` regardless of this default.
+
+## Topics & orchestrator
+
+For multi-session setups, a Claude Code session's role is chosen at launch via the `TELEGRAM_TOPIC` env var: unset runs today's single-session **legacy** behavior; `general` runs the **orchestrator** (the General-topic control session); a numeric topic id runs a **worker** bound to that forum topic.
+
+Forum topics live inside a single supergroup, so access gating stays **group-level**: a topic is just a routing key within a group that's already been allowed with `/telegram:access group add`. Enabling topics or adding topic-scoped sessions doesn't bypass the group allowlist above.
+
+For a dedicated Claude supergroup, enable **Topics** on it, add the group with `--no-mention` (e.g. `/telegram:access group add -1001654782309 --no-mention`), and disable BotFather privacy mode (`/setprivacy` → **Disable**) as described above — otherwise Telegram's server-side privacy filter, not just the local `requireMention` setting, will drop messages that aren't @mentions before they ever reach a worker's topic.
+
+The bot must be a **group admin with `can_manage_topics`** for the topic-management tools (`create_topic`, `edit_topic`, `close_topic`, `reopen_topic`) to work.
+
+`spawn_session` is gated by the required `spawnRoots` config key: it refuses to launch a worker unless the requested working directory resolves under one of the configured absolute path prefixes.
+
 ## Skill reference
 
 | Command | Effect |
@@ -104,7 +118,8 @@ Configure outbound behavior with `/telegram:access set <key> <value>`.
 | `/telegram:access policy allowlist` | Set `dmPolicy`. Values: `pairing`, `allowlist`, `disabled`. |
 | `/telegram:access group add -1001654782309` | Enable a group. Flags: `--no-mention` (also requires disabling privacy mode), `--allow id1,id2`. |
 | `/telegram:access group rm -1001654782309` | Disable a group. |
-| `/telegram:access set ackReaction 👀` | Set a config key: `ackReaction`, `replyToMode`, `textChunkLimit`, `chunkMode`, `mentionPatterns`. |
+| `/telegram:access set ackReaction 👀` | Set a config key: `ackReaction`, `replyToMode`, `textChunkLimit`, `chunkMode`, `mentionPatterns`, `defaultReplyFormat`. |
+| `/telegram:access set spawnRoots '["/abs/path"]'` | Set the required allowlist of absolute path prefixes the orchestrator's `spawn_session` may launch workers under. JSON array. |
 
 ## Config file
 
@@ -142,6 +157,11 @@ Configure outbound behavior with `/telegram:access set <key> <value>`.
   "textChunkLimit": 4096,
 
   // length = cut at limit. newline = prefer paragraph boundaries.
-  "chunkMode": "newline"
+  "chunkMode": "newline",
+
+  // Required to allow spawn_session. Absolute path prefixes; a worker's cwd must resolve under one.
+  "spawnRoots": ["/Users/me/projects"],
+  // Default reply rendering when the caller omits `format`: text | markdownv2 | rich
+  "defaultReplyFormat": "text"
 }
 ```

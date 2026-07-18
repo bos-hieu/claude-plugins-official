@@ -43,11 +43,15 @@ Arguments passed: `$ARGUMENTS`
       "createdAt": <ms>, "expiresAt": <ms>
     }
   },
-  "mentionPatterns": ["@mybot"]
+  "mentionPatterns": ["@mybot"],
+  "defaultReplyFormat": "text",
+  "spawnRoots": ["/abs/path"]
 }
 ```
 
 Missing file = `{dmPolicy:"pairing", allowFrom:[], groups:{}, pending:{}}`.
+`defaultReplyFormat` and `spawnRoots` are optional (see `set` below); `spawnRoots`
+is required only if you use the orchestrator's `spawn_session` tool.
 
 ---
 
@@ -108,13 +112,22 @@ Parse `$ARGUMENTS` (space-separated). If empty or unrecognized, show status.
 
 ### `set <key> <value>`
 
-Delivery/UX config. Supported keys: `ackReaction`, `replyToMode`,
-`textChunkLimit`, `chunkMode`, `mentionPatterns`. Validate types:
+Delivery/UX and multi-session config. Supported keys: `ackReaction`,
+`replyToMode`, `textChunkLimit`, `chunkMode`, `mentionPatterns`,
+`defaultReplyFormat`, `spawnRoots`. Validate types:
 - `ackReaction`: string (emoji) or `""` to disable
 - `replyToMode`: `off` | `first` | `all`
 - `textChunkLimit`: number
 - `chunkMode`: `length` | `newline`
 - `mentionPatterns`: JSON array of regex strings
+- `defaultReplyFormat`: `text` | `markdownv2` | `rich` — rendering used when a
+  `reply`/`edit_message` call omits `format`. `rich` (Bot API 10.1) renders
+  Markdown natively with automatic fallback to plain text.
+- `spawnRoots`: JSON array of absolute path strings. **Required** before the
+  orchestrator's `spawn_session` tool will launch a worker — it refuses unless
+  the requested working directory resolves under one of these prefixes. This is
+  a security boundary (it authorizes where sessions may be spawned), so only set
+  it to directories you intend workers to run in.
 
 Read, set the key, write, confirm.
 
