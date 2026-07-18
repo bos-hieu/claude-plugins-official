@@ -22,34 +22,22 @@ import {
 import { z } from 'zod'
 import { Bot, InlineKeyboard, InputFile } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
-import { readFileSync, writeFileSync, mkdirSync, statSync, realpathSync, chmodSync } from 'fs'
-import { homedir } from 'os'
+import net from 'net'
+import { spawn } from 'child_process'
+import { fileURLToPath } from 'url'
+import { writeFileSync, mkdirSync, statSync, realpathSync } from 'fs'
 import { join, extname, sep } from 'path'
 import { chunk } from './chunk'
 import {
   loadAccess, assertAllowedChat,
   MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES,
 } from './access'
+import { TOKEN, SOCK_FILE, STATE_DIR, INBOX_DIR, ENV_FILE, BINDING } from './config'
+import { encodeFrame, LineDecoder, type BrokerFrame } from './ipc'
 
-const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'telegram')
-const ACCESS_FILE = join(STATE_DIR, 'access.json')
-const APPROVED_DIR = join(STATE_DIR, 'approved')
-const ENV_FILE = join(STATE_DIR, '.env')
-
-// Load ~/.claude/channels/telegram/.env into process.env. Real env wins.
-// Plugin-spawned servers don't get an env block — this is where the token lives.
-try {
-  // Token is a credential — lock to owner. No-op on Windows (would need ACLs).
-  chmodSync(ENV_FILE, 0o600)
-  for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-    const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
-  }
-} catch {}
-
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN
-const STATIC = process.env.TELEGRAM_ACCESS_MODE === 'static'
-
+// Env loading (.env → process.env), path constants, TOKEN and BINDING all live
+// in ./config now (imported above) — no longer duplicated here. Keep the guard
+// so new Bot(TOKEN) below gets a defined token.
 if (!TOKEN) {
   process.stderr.write(
     `telegram channel: TELEGRAM_BOT_TOKEN required\n` +
@@ -58,7 +46,6 @@ if (!TOKEN) {
   )
   process.exit(1)
 }
-const INBOX_DIR = join(STATE_DIR, 'inbox')
 
 // Last-resort safety net — without these the process dies silently on any
 // unhandled promise rejection. With them it logs and keeps serving tools.
@@ -352,6 +339,82 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   }
 })
 
+// ── Broker IPC client ───────────────────────────────────────────────────────
+// Polling/gating/routing live in broker.ts (one getUpdates consumer per token).
+// This process connects to the broker's Unix socket, registers its role from
+// BINDING, and relays inbound frames into MCP channel notifications. Outbound
+// tools above talk to Telegram directly via `bot`.
+let brokerSocket: net.Socket | null = null
+let botChatIdHint = ''
+// list_sessions round-trip state (the tool itself is added in Task 12).
+let sessionsWaiters: Array<(s: any[]) => void> = []
+function resolvePendingSessions(s: any[]): void { for (const w of sessionsWaiters) w(s); sessionsWaiters = [] }
+
+// Spawn the broker daemon detached so it outlives this session. Safe to call
+// even if one is already (or concurrently) coming up: broker.ts probes the
+// socket and a redundant instance exits on EADDRINUSE without ever polling.
+function spawnBroker(): void {
+  const brokerPath = fileURLToPath(new URL('./broker.ts', import.meta.url))
+  const child = spawn('bun', [brokerPath], { detached: true, stdio: 'ignore', env: process.env })
+  child.unref()
+}
+
+// Bounded connect loop: try the socket; if nothing's listening, spawn the broker
+// once and keep retrying so the just-spawned daemon gets picked up as soon as it
+// binds. Give up after ~8s and resolve null rather than blocking MCP startup
+// forever — outbound tools still work without the inbound relay.
+function connectBroker(onFrame: (f: BrokerFrame) => void): Promise<net.Socket | null> {
+  return new Promise(resolve => {
+    let spawned = false
+    const deadline = Date.now() + 8_000
+    const attempt = (): void => {
+      const s = net.createConnection(SOCK_FILE)
+      const onConnectError = (): void => {
+        s.destroy()
+        if (!spawned) { spawnBroker(); spawned = true }
+        if (Date.now() >= deadline) { resolve(null); return }
+        setTimeout(attempt, 300)
+      }
+      s.once('error', onConnectError)
+      s.once('connect', () => {
+        s.off('error', onConnectError)
+        // Swallow late errors (e.g. a broker crash) so they don't kill this
+        // process — the outbound tools keep working regardless.
+        s.on('error', () => {})
+        const dec = new LineDecoder<BrokerFrame>(onFrame)
+        s.on('data', d => dec.push(d))
+        s.write(encodeFrame({ t: 'register', role: BINDING.role, topic_id: BINDING.topicId, pid: process.pid }))
+        setInterval(() => s.write(encodeFrame({ t: 'heartbeat' })), 10_000).unref()
+        resolve(s)
+      })
+    }
+    attempt()
+  })
+}
+
+async function startInbound(): Promise<void> {
+  brokerSocket = await connectBroker(frame => {
+    if (frame.t === 'welcome') { botChatIdHint = frame.chat_id ?? ''; return }
+    if (frame.t === 'inbound') {
+      if (frame.meta.permission) {
+        void mcp.notification({
+          method: 'notifications/claude/channel/permission',
+          params: { request_id: frame.meta.permission.request_id, behavior: frame.meta.permission.behavior },
+        })
+        return
+      }
+      void mcp.notification({ method: 'notifications/claude/channel', params: { content: frame.content, meta: frame.meta } })
+      return
+    }
+    if (frame.t === 'sessions') { resolvePendingSessions(frame.sessions); return }
+    if (frame.t === 'error') { process.stderr.write(`telegram session: broker error: ${frame.message}\n`) }
+  })
+  if (!brokerSocket) {
+    process.stderr.write('telegram session: broker unreachable — inbound relay disabled (outbound tools still work)\n')
+  }
+}
+
+await startInbound()
 await mcp.connect(new StdioServerTransport())
 
 // When Claude Code closes the MCP connection, stdin gets EOF. Exit so this
