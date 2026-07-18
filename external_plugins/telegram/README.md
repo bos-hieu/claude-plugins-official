@@ -64,6 +64,30 @@ Your next DM reaches the assistant.
 
 Pairing is for capturing IDs. Once you're in, switch to `allowlist` so strangers don't get pairing-code replies. Ask Claude to do it, or `/telegram:access policy allowlist` directly.
 
+## Multiple sessions & forum topics
+
+One bot can serve many concurrent Claude Code sessions, routed by Telegram **forum topics** in a supergroup. A single **broker daemon** (one per `TELEGRAM_STATE_DIR`) owns the bot's `getUpdates` poll, gates inbound messages through access control, and hands each one to the session that claimed its topic over a Unix-domain socket (`broker.sock`). It's spawned automatically by the first session that starts, and self-reaps ~30s after the last connected session exits. This is single-host only — the broker and every session it serves must run on the same machine.
+
+Sessions still reply directly to Telegram; only inbound polling goes through the broker.
+
+A session's role is chosen at launch with the `TELEGRAM_TOPIC` env var:
+
+| `TELEGRAM_TOPIC` | Role |
+| --- | --- |
+| unset | **Legacy** — today's single-session behavior, unchanged |
+| `general` | **Orchestrator** — the General-topic control session |
+| a numeric topic id | **Worker** — bound to that forum topic |
+
+```sh
+# orchestrator (General topic)
+TELEGRAM_TOPIC=general claude --channels plugin:telegram@claude-plugins-official
+
+# worker bound to topic 34
+TELEGRAM_TOPIC=34 claude --channels plugin:telegram@claude-plugins-official
+```
+
+The orchestrator coordinates the other sessions: `list_sessions` to see who's connected and to which topic, `create_topic`/`edit_topic`/`close_topic`/`reopen_topic` to manage the forum's topics, and `spawn_session`/`stop_session` to launch or tear down workers. It can also route work into any topic directly by calling `reply` with that topic's `message_thread_id`.
+
 ## Access control
 
 See **[ACCESS.md](./ACCESS.md)** for DM policies, groups, mention detection, delivery config, skill commands, and the `access.json` schema.
@@ -74,12 +98,18 @@ Quick reference: IDs are **numeric user IDs** (get yours from [@userinfobot](htt
 
 | Tool | Purpose |
 | --- | --- |
-| `reply` | Send to a chat. Takes `chat_id` + `text`, optionally `reply_to` (message ID) for native threading and `files` (absolute paths) for attachments. Images (`.jpg`/`.png`/`.gif`/`.webp`) send as photos with inline preview; other types send as documents. Max 50MB each. Auto-chunks text; files send as separate messages after the text. Returns the sent message ID(s). |
+| `reply` | Send to a chat. Takes `chat_id` + `text`, optionally `reply_to` (message ID) for native threading, `message_thread_id` to send into a specific forum topic, `format: 'rich'` to render Claude's Markdown natively (auto-falls back to plain text if the bot/API doesn't support Rich Messages; default stays `text`), and `files` (absolute paths) for attachments. Images (`.jpg`/`.png`/`.gif`/`.webp`) send as photos with inline preview; other types send as documents. Max 50MB each. Auto-chunks text; files send as separate messages after the text. Returns the sent message ID(s). |
 | `react` | Add an emoji reaction to a message by ID. **Only Telegram's fixed whitelist** is accepted (👍 👎 ❤ 🔥 👀 etc). |
-| `edit_message` | Edit a message the bot previously sent. Useful for "working…" → result progress updates. Only works on the bot's own messages. |
+| `edit_message` | Edit a message the bot previously sent. Useful for "working…" → result progress updates. Also accepts `format: 'rich'`. Only works on the bot's own messages. |
+
+The `general`-topic (orchestrator) session additionally gets: `list_sessions`, `create_topic`/`edit_topic`/`close_topic`/`reopen_topic`, and `spawn_session`/`stop_session`.
 
 Inbound messages trigger a typing indicator automatically — Telegram shows
 "botname is typing…" while the assistant works on a response.
+
+## Rich Messages
+
+With Bot API 10.1, `reply` and `edit_message` accept `format: 'rich'`, which renders Claude's Markdown — headings, code blocks, lists, tables — natively in Telegram instead of falling back to plain text. If the bot or the Telegram client doesn't support Rich Messages, it automatically falls back to plain text. The default format is unchanged (`text`).
 
 ## Photos
 
