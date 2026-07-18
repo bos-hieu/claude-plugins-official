@@ -86,6 +86,38 @@ Delete the `TELEGRAM_BOT_TOKEN=` line (or the file if that's the only line).
 
 ---
 
+## Multi-session & topics
+
+The bot can run more than one session at once, using Telegram forum topics.
+Role is chosen at launch via the `TELEGRAM_TOPIC` env var:
+
+- **Unset** — legacy mode, a single session, today's default behavior.
+- **`general`** — orchestrator mode; can spawn worker sessions on new topics.
+- **A numeric topic ID** — worker mode, bound to that topic.
+
+```sh
+TELEGRAM_TOPIC=general claude --channels plugin:telegram@claude-plugins-official   # orchestrator
+TELEGRAM_TOPIC=34 claude --channels plugin:telegram@claude-plugins-official        # worker on topic 34
+```
+
+The orchestrator's `spawn_session` tool refuses to launch anything until
+`spawnRoots` is configured — an array of absolute path prefixes a worker's cwd
+must resolve under. Set it the same way as other access settings:
+
+```
+/telegram:access set spawnRoots '["/abs/path"]'
+```
+
+Optionally, `defaultReplyFormat` (`text` | `markdownv2` | `rich`) sets the
+default rendering when a reply omits `format`:
+
+```
+/telegram:access set defaultReplyFormat rich
+```
+
+Both are `access.json` keys managed by `/telegram:access`, not this skill. See
+`ACCESS.md` for the full topics/orchestrator model.
+
 ## Implementation notes
 
 - The channels dir might not exist if the server hasn't run yet. Missing file
